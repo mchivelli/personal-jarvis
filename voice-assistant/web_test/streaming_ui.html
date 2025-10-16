@@ -216,6 +216,46 @@
             margin-left: 3px;
         }
 
+        .message.confirmation {
+            background: linear-gradient(135deg, #ffd89b 0%, #19547b 100%);
+            color: white;
+            border: 2px solid #f39c12;
+            box-shadow: 0 4px 15px rgba(243, 156, 18, 0.3);
+        }
+
+        .confirmation-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .confirm-btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .confirm-btn.yes {
+            background: #27ae60;
+            color: white;
+        }
+
+        .confirm-btn.yes:hover {
+            background: #229954;
+        }
+
+        .confirm-btn.no {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .confirm-btn.no:hover {
+            background: #c0392b;
+        }
+
         @keyframes blink {
             0%, 100% { opacity: 0; }
             50% { opacity: 1; }
@@ -430,6 +470,15 @@
                 }
             });
 
+            socket.on('confirmation_request', (data) => {
+                // Show confirmation message with special styling
+                addConfirmationMessage(data.text, data.tools);
+                isProcessing = false;
+                micButton.classList.remove('processing');
+                micButton.textContent = '🎤';
+                statusMessage.textContent = 'Say "yes" to confirm or "no" to cancel';
+            });
+
             socket.on('response_complete', (data) => {
                 addMessage('assistant', data.text);
                 isProcessing = false;
@@ -600,6 +649,57 @@
             timestamp.textContent = new Date().toLocaleTimeString();
             
             messageDiv.appendChild(contentDiv);
+            messageDiv.appendChild(timestamp);
+            conversation.appendChild(messageDiv);
+            conversation.scrollTop = conversation.scrollHeight;
+            
+            messageCount++;
+            messageCountEl.textContent = messageCount;
+        }
+
+        function addConfirmationMessage(text, tools) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant confirmation';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.innerHTML = `
+                <strong>⚠️ Confirmation Required</strong><br>
+                ${text}
+            `;
+            
+            const buttonsDiv = document.createElement('div');
+            buttonsDiv.className = 'confirmation-buttons';
+            
+            const yesBtn = document.createElement('button');
+            yesBtn.className = 'confirm-btn yes';
+            yesBtn.textContent = '✓ Yes, Proceed';
+            yesBtn.onclick = () => {
+                // Remove buttons after click
+                buttonsDiv.remove();
+                statusMessage.textContent = 'Say "yes" or click microphone to confirm';
+            };
+            
+            const noBtn = document.createElement('button');
+            noBtn.className = 'confirm-btn no';
+            noBtn.textContent = '✗ No, Cancel';
+            noBtn.onclick = () => {
+                // Remove buttons and send cancel
+                buttonsDiv.remove();
+                socket.emit('audio_data', { 
+                    audio: btoa('no')  // Send cancel signal
+                });
+                statusMessage.textContent = 'Cancelled';
+            };
+            
+            buttonsDiv.appendChild(yesBtn);
+            buttonsDiv.appendChild(noBtn);
+            
+            const timestamp = document.createElement('div');
+            timestamp.className = 'timestamp';
+            timestamp.textContent = new Date().toLocaleTimeString();
+            
+            messageDiv.appendChild(contentDiv);
+            messageDiv.appendChild(buttonsDiv);
             messageDiv.appendChild(timestamp);
             conversation.appendChild(messageDiv);
             conversation.scrollTop = conversation.scrollHeight;

@@ -63,6 +63,8 @@ class VoiceSession:
         self.is_processing = False
         self.should_interrupt = False
         self.current_response = ""
+        self.pending_tools = None  # Store tools awaiting confirmation
+        self.awaiting_confirmation = False
         
     def add_message(self, role, content):
         self.conversation_history.append({
@@ -75,6 +77,21 @@ class VoiceSession:
         """Signal to stop current processing"""
         self.should_interrupt = True
         self.is_processing = False
+        
+    def set_pending_tools(self, tools_info):
+        """Store tools that need confirmation"""
+        self.pending_tools = tools_info
+        self.awaiting_confirmation = True
+        
+    def confirm_tools(self):
+        """User confirmed tool execution"""
+        self.awaiting_confirmation = False
+        return self.pending_tools
+        
+    def cancel_tools(self):
+        """User cancelled tool execution"""
+        self.awaiting_confirmation = False
+        self.pending_tools = None
 
 
 def transcribe_audio(audio_path: str) -> str:
@@ -164,9 +181,17 @@ def call_n8n_webhook(text: str, intent: str = "CONVERSATION") -> dict:
         return {"error": str(e)}
 
 
-def detect_intent(text: str) -> str:
+def detect_intent(text: str, session=None) -> str:
     """Quick intent detection based on keywords"""
-    text_lower = text.lower()
+    text_lower = text.lower().strip()
+    
+    # Check if awaiting confirmation
+    if session and session.awaiting_confirmation:
+        # Confirmation keywords
+        if any(kw in text_lower for kw in ['yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'confirm', 'go ahead', 'do it', 'proceed']):
+            return "CONFIRM"
+        if any(kw in text_lower for kw in ['no', 'nope', 'cancel', 'stop', 'don\'t', 'nevermind', 'never mind']):
+            return "CANCEL"
     
     # Tool keywords
     if any(kw in text_lower for kw in ['send email', 'email', 'write email']):
@@ -175,7 +200,7 @@ def detect_intent(text: str) -> str:
         return "TOOLS"
     if any(kw in text_lower for kw in ['contact', 'phone number', 'address']):
         return "TOOLS"
-    if any(kw in text_lower for kw in ['search', 'look up', 'find on internet']):
+    if any(kw in text_lower for kw in ['search', 'look up', 'find on internet', 'google']):
         return "TOOLS"
     
     # Default to conversation
@@ -263,19 +288,49 @@ def handle_audio(data):
                 emit('transcript', {'text': transcript})
                 session.add_message("user", transcript)
                 
-                # Detect intent
-                intent = detect_intent(transcript)
+                # Detect intent with session context
+                intent = detect_intent(transcript, session)
                 emit('intent', {'intent': intent})
                 
-                if intent == "TOOLS":
-                    # Use n8n for tools
-                    emit('status', {'message': 'Executing tools...'})
-                    n8n_response = call_n8n_webhook(transcript, "TOOLS")
+                if intent == "CONFIRM":
+                    # User confirmed pending tools
+                    emit('status', {'message': 'Executing confirmed tools...'})
+                    pending = session.confirm_tools()
                     
-                    response_text = n8n_response.get('output') or n8n_response.get('message', 'Tool executed')
+                    if pending:
+                        n8n_response = call_n8n_webhook(pending['original_text'], "TOOLS")
+                        response_text = n8n_response.get('output') or n8n_response.get('message', 'Tools executed')
+                    else:
+                        response_text = "No pending tools to execute."
                     
                     emit('response_complete', {'text': response_text})
                     session.add_message("assistant", response_text)
+                    
+                elif intent == "CANCEL":
+                    # User cancelled pending tools
+                    session.cancel_tools()
+                    response_text = "Okay, I've cancelled that action."
+                    emit('response_complete', {'text': response_text})
+                    session.add_message("assistant", response_text)
+                    
+                elif intent == "TOOLS":
+                    # Ask for confirmation before executing tools
+                    emit('status', {'message': 'Identifying required tools...'})
+                    
+                    # Store pending tools
+                    session.set_pending_tools({
+                        'original_text': transcript,
+                        'timestamp': time.time()
+                    })
+                    
+                    # Ask for confirmation
+                    confirmation_msg = f"I will execute tools to handle: '{transcript}'. Do you want me to proceed?"
+                    emit('confirmation_request', {
+                        'text': confirmation_msg,
+                        'tools': ['Based on your request']
+                    })
+                    emit('response_complete', {'text': confirmation_msg})
+                    session.add_message("assistant", confirmation_msg)
                     
                 else:
                     # Stream conversation response
