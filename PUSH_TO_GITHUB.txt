@@ -1,0 +1,58 @@
+# Final Steps to Push to GitHub
+
+## You're almost done! Just need to commit and push.
+
+## Option 1: Use the batch file (EASIEST)
+
+Just double-click this file:
+    git_push.bat
+
+It will commit and push everything to GitHub automatically.
+
+## Option 2: Manual commands
+
+Open PowerShell in this directory and run:
+
+    git commit -m "Personal Jarvis voice assistant"
+    git push -u origin main
+
+## After Pushing
+
+On your local machine, clone the repository:
+
+    git clone https://github.com/mchivelli/personal-jarvis.git
+    cd personal-jarvis
+
+Then follow the instructions in: SETUP_NEW_MACHINE.md
+
+## Important Configuration for Remote n8n
+
+1. Find your n8n server's IP address or domain
+2. Edit voice-assistant/.env
+3. Update this line:
+    N8N_WEBHOOK_URL=http://YOUR_N8N_SERVER_IP:PORT/webhook/voice-assistant
+
+Example:
+    N8N_WEBHOOK_URL=http://192.168.1.100:32768/webhook/voice-assistant
+
+## Testing Connectivity
+
+Test that your local machine can reach n8n:
+
+    curl http://YOUR_N8N_SERVER_IP:PORT/healthz
+
+Then test the webhook:
+
+    curl -X POST http://YOUR_N8N_SERVER_IP:PORT/webhook/voice-assistant \
+      -H "Content-Type: application/json" \
+      -d "{\"text\":\"test\",\"intent\":\"CONVERSATION\",\"source\":\"test\"}"
+
+## Current Setup
+
+✅ Git repository initialized
+✅ Files staged for commit
+✅ Remote added: https://github.com/mchivelli/personal-jarvis.git
+✅ Branch renamed to main
+⏳ Ready to commit and push!
+
+Just run git_push.bat or the manual commands above!

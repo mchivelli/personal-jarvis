@@ -80,6 +80,65 @@ def index():
     return send_from_directory('.', 'index.html')
 
 
+@app.route('/api/test')
+def test_connection():
+    """Test endpoint for connection checking"""
+    return jsonify({
+        'success': True,
+        'message': 'Server is running',
+        'n8n_configured': bool(N8N_WEBHOOK),
+        'whisper_available': WHISPER_AVAILABLE
+    })
+
+
+@app.route('/api/chat', methods=['POST'])
+def handle_chat():
+    """Handle text-only chat (no audio transcription)"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'No text provided'
+            }), 400
+        
+        text = data['text']
+        print(f"Chat input: {text}")
+        
+        # Send to n8n
+        try:
+            n8n_response = call_n8n_webhook(text, "CONVERSATION")
+            print(f"n8n response: {n8n_response}")
+            
+            # Extract response text
+            if isinstance(n8n_response, dict):
+                response_text = n8n_response.get('output') or n8n_response.get('message') or str(n8n_response)
+            else:
+                response_text = str(n8n_response)
+                
+        except Exception as e:
+            print(f"n8n webhook error: {e}")
+            return jsonify({
+                'success': False,
+                'error': f"n8n error: {str(e)}"
+            }), 500
+        
+        return jsonify({
+            'success': True,
+            'response': response_text
+        })
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/voice', methods=['POST'])
 def handle_voice():
     """Handle voice input from browser"""
@@ -139,11 +198,19 @@ def handle_voice():
             
             # Send to n8n
             print(f"Sending to n8n: {transcript}")
-            n8n_response = call_n8n_webhook(transcript, "CONVERSATION")
-            print(f"n8n response: {n8n_response}")
-            
-            # Extract response text
-            response_text = n8n_response.get('output', n8n_response.get('message', 'I received your message.'))
+            try:
+                n8n_response = call_n8n_webhook(transcript, "CONVERSATION")
+                print(f"n8n response: {n8n_response}")
+                
+                # Extract response text
+                if isinstance(n8n_response, dict):
+                    response_text = n8n_response.get('output') or n8n_response.get('message') or str(n8n_response)
+                else:
+                    response_text = str(n8n_response)
+                    
+            except Exception as e:
+                print(f"n8n webhook error: {e}")
+                response_text = f"Error communicating with n8n: {str(e)}"
             
             return jsonify({
                 'success': True,
