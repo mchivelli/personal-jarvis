@@ -11,6 +11,9 @@ aiohttp==3.10.5
 requests==2.31.0
 flask==3.0.0
 flask-cors==4.0.0
+websockets==12.0
+flask-socketio==5.3.5
+python-socketio==5.10.0
 
 # Data Processing
 numpy==1.26.4
