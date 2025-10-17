@@ -15,6 +15,11 @@ from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import requests
 import subprocess
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path)
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -333,31 +338,37 @@ def handle_audio(data):
                     session.add_message("assistant", confirmation_msg)
                     
                 else:
-                    # Stream conversation response
+                    # Use n8n for conversation (remote n8n handles Ollama)
                     emit('status', {'message': 'Thinking...'})
                     session.is_processing = True
-                    session.should_interrupt = False
                     
-                    # Build context from history
-                    context = "You are a helpful AI assistant. Be conversational and natural.\n\n"
-                    if len(session.conversation_history) > 1:
-                        context += "Previous conversation:\n"
-                        for msg in session.conversation_history[-4:]:  # Last 4 messages
-                            context += f"{msg['role']}: {msg['content']}\n"
+                    n8n_response = call_n8n_webhook(transcript, "CONVERSATION")
                     
-                    prompt = f"{context}\nuser: {transcript}\nassistant:"
+                    response_text = n8n_response.get('output') or n8n_response.get('response') or n8n_response.get('message', 'I received your message')
                     
-                    # Stream response (run in thread to not block)
-                    import threading
-                    def stream_response():
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(stream_ollama_response(prompt, session, sid))
-                        loop.close()
-                        session.is_processing = False
+                    # Check for error
+                    if 'error' in n8n_response:
+                        response_text = f"Error: {n8n_response['error']}"
+                        emit('error', {'message': response_text})
+                    else:
+                        # Simulate streaming by sending response word by word
+                        words = response_text.split()
+                        for i, word in enumerate(words):
+                            if session.should_interrupt:
+                                emit('response_interrupted', {})
+                                break
+                            
+                            chunk = word + (' ' if i < len(words) - 1 else '')
+                            emit('response_chunk', {
+                                'chunk': chunk,
+                                'done': i == len(words) - 1
+                            })
+                            time.sleep(0.05)  # Slight delay to simulate streaming
+                        
+                        emit('response_complete', {'text': response_text})
                     
-                    thread = threading.Thread(target=stream_response)
-                    thread.start()
+                    session.add_message("assistant", response_text)
+                    session.is_processing = False
             else:
                 emit('error', {'message': 'Could not transcribe audio'})
             
@@ -377,6 +388,112 @@ def handle_audio(data):
         emit('error', {'message': str(e)})
 
 
+@socketio.on('text_message')
+def handle_text_message(data):
+    """Handle text message from browser speech recognition"""
+    sid = request.sid if hasattr(request, 'sid') else 'unknown'
+    session = sessions.get(sid)
+    
+    if not session:
+        emit('error', {'message': 'Session not found'})
+        return
+    
+    try:
+        transcript = data.get('text', '').strip()
+        if not transcript:
+            emit('error', {'message': 'No text provided'})
+            return
+        
+        print(f"[TEXT] Received from {sid}: {transcript}")
+        
+        # Add user message to history
+        session.add_message("user", transcript)
+        
+        # Detect intent with session context
+        intent = detect_intent(transcript, session)
+        emit('intent', {'intent': intent})
+        
+        if intent == "CONFIRM":
+            # User confirmed pending tools
+            emit('status', {'message': 'Executing confirmed tools...'})
+            pending = session.confirm_tools()
+            
+            if pending:
+                n8n_response = call_n8n_webhook(pending['original_text'], "TOOLS")
+                response_text = n8n_response.get('output') or n8n_response.get('message', 'Tools executed')
+            else:
+                response_text = "No pending tools to execute."
+            
+            emit('response_complete', {'text': response_text})
+            session.add_message("assistant", response_text)
+            
+        elif intent == "CANCEL":
+            # User cancelled pending tools
+            session.cancel_tools()
+            response_text = "Okay, I've cancelled that action."
+            emit('response_complete', {'text': response_text})
+            session.add_message("assistant", response_text)
+            
+        elif intent == "TOOLS":
+            # Ask for confirmation before executing tools
+            emit('status', {'message': 'Identifying required tools...'})
+            
+            # Store pending tools
+            session.set_pending_tools({
+                'original_text': transcript,
+                'timestamp': time.time()
+            })
+            
+            # Ask for confirmation
+            confirmation_msg = f"I will execute tools to handle: '{transcript}'. Do you want me to proceed?"
+            emit('confirmation_request', {
+                'text': confirmation_msg,
+                'tools': ['Based on your request']
+            })
+            emit('response_complete', {'text': confirmation_msg})
+            session.add_message("assistant", confirmation_msg)
+            
+        else:
+            # Use n8n for conversation (remote n8n handles Ollama)
+            emit('status', {'message': 'Thinking...'})
+            session.is_processing = True
+            
+            n8n_response = call_n8n_webhook(transcript, "CONVERSATION")
+            
+            response_text = n8n_response.get('output') or n8n_response.get('response') or n8n_response.get('message', 'I received your message')
+            
+            # Check for error
+            if 'error' in n8n_response:
+                response_text = f"Error: {n8n_response['error']}"
+                emit('error', {'message': response_text})
+            else:
+                # Simulate streaming by sending response word by word
+                words = response_text.split()
+                for i, word in enumerate(words):
+                    if session.should_interrupt:
+                        emit('response_interrupted', {})
+                        break
+                    
+                    chunk = word + (' ' if i < len(words) - 1 else '')
+                    emit('response_chunk', {
+                        'chunk': chunk,
+                        'done': i == len(words) - 1
+                    })
+                    time.sleep(0.05)  # Slight delay to simulate streaming
+                
+                emit('response_complete', {'text': response_text})
+                # TTS is handled locally by the browser - no audio needed from server
+            
+            session.add_message("assistant", response_text)
+            session.is_processing = False
+            
+    except Exception as e:
+        print(f"Error processing text: {e}")
+        import traceback
+        traceback.print_exc()
+        emit('error', {'message': str(e)})
+
+
 @socketio.on('interrupt')
 def handle_interrupt():
     """Handle interrupt signal from client"""
@@ -390,6 +507,11 @@ def handle_interrupt():
 
 
 if __name__ == '__main__':
+    # Fix Windows console encoding for emojis
+    import sys
+    if sys.platform == 'win32':
+        sys.stdout.reconfigure(encoding='utf-8')
+    
     print("\n" + "="*60)
     print("🎙️ Real-Time Streaming Voice Assistant")
     print("="*60)

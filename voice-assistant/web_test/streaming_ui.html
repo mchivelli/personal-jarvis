@@ -406,8 +406,7 @@
 
     <script>
         let socket;
-        let mediaRecorder;
-        let audioChunks = [];
+        let recognition;
         let isRecording = false;
         let isProcessing = false;
         let startTime;
@@ -427,6 +426,11 @@
         // Initialize WebSocket connection
         function connectWebSocket() {
             socket = io('http://localhost:5002');
+
+            // Initialize speech recognition
+            if (!recognition) {
+                initSpeechRecognition();
+            }
 
             socket.on('connect', () => {
                 console.log('Connected to server');
@@ -481,6 +485,10 @@
 
             socket.on('response_complete', (data) => {
                 addMessage('assistant', data.text);
+                
+                // Speak the response using browser TTS (local, no latency)
+                speakText(data.text);
+                
                 isProcessing = false;
                 interruptBtn.classList.remove('show');
                 micButton.classList.remove('processing');
@@ -491,236 +499,177 @@
                 if (currentStreamingMessage) {
                     finalizeStreamingMessage();
                 }
-                isProcessing = false;
-                interruptBtn.classList.remove('show');
-                micButton.classList.remove('processing');
-                statusMessage.textContent = 'Interrupted - Ready to talk';
+                statusMessage.textContent = 'Response interrupted';
             });
 
+            // TTS is now handled locally via browser (no audio from server)
+
             socket.on('error', (data) => {
+                console.error('Error:', data.message);
                 statusMessage.textContent = `Error: ${data.message}`;
                 isProcessing = false;
                 micButton.classList.remove('processing');
+                micButton.textContent = '🎤';
+                interruptBtn.classList.remove('show');
             });
         }
 
-        // Push-to-talk controls
-        micButton.addEventListener('mousedown', startRecording);
-        micButton.addEventListener('mouseup', stopRecording);
-        micButton.addEventListener('touchstart', startRecording);
-        micButton.addEventListener('touchend', stopRecording);
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            if (e.code === 'Space' && !isRecording && !isProcessing) {
-                e.preventDefault();
-                startRecording();
-            }
-            if (e.code === 'Escape' && isProcessing) {
-                interruptResponse();
-            }
-        });
-
-        document.addEventListener('keyup', (e) => {
-            if (e.code === 'Space' && isRecording) {
-                e.preventDefault();
-                stopRecording();
-            }
-        });
-
-        async function startRecording() {
-            if (isRecording || isProcessing || !socket || !socket.connected) return;
-
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        channelCount: 1,
-                        sampleRate: 16000,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    }
-                });
-
-                const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                    ? 'audio/webm;codecs=opus'
-                    : 'audio/webm';
-
-                mediaRecorder = new MediaRecorder(stream, { mimeType });
-                audioChunks = [];
-                startTime = Date.now();
-
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data.size > 0) {
-                        audioChunks.push(event.data);
-                    }
-                };
-
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: mimeType });
-                    await sendAudioToServer(audioBlob);
-                    stream.getTracks().forEach(track => track.stop());
-                };
-
-                mediaRecorder.start(100);
-                isRecording = true;
-                micButton.classList.add('recording');
-                micButton.textContent = '🔴';
-                statusMessage.textContent = '🎤 Recording... (release to send)';
-
-            } catch (error) {
-                console.error('Microphone error:', error);
-                statusMessage.textContent = 'Error: Could not access microphone';
-            }
-        }
-
-        function stopRecording() {
-            if (mediaRecorder && isRecording) {
-                mediaRecorder.stop();
-                isRecording = false;
-                isProcessing = true;
-                micButton.classList.remove('recording');
-                micButton.classList.add('processing');
-                micButton.textContent = '⏳';
-                statusMessage.textContent = 'Processing...';
-                interruptBtn.classList.add('show');
-            }
-        }
-
-        async function sendAudioToServer(audioBlob) {
-            const reader = new FileReader();
-            reader.readAsDataURL(audioBlob);
-            reader.onloadend = () => {
-                const base64Audio = reader.result.split(',')[1];
-                socket.emit('audio_data', { audio: base64Audio });
-            };
-        }
-
-        function createStreamingMessage() {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message assistant streaming';
-            messageDiv.innerHTML = '<div class="content"></div><div class="typing-indicator"></div>';
-            conversation.appendChild(messageDiv);
-            conversation.scrollTop = conversation.scrollHeight;
-            return messageDiv;
-        }
-
-        function appendToStreamingMessage(chunk) {
-            if (currentStreamingMessage) {
-                const contentDiv = currentStreamingMessage.querySelector('.content');
-                contentDiv.textContent += chunk;
-                conversation.scrollTop = conversation.scrollHeight;
-            }
-        }
-
-        function finalizeStreamingMessage() {
-            if (currentStreamingMessage) {
-                const indicator = currentStreamingMessage.querySelector('.typing-indicator');
-                if (indicator) {
-                    indicator.remove();
-                }
-                currentStreamingMessage.classList.remove('streaming');
+        function addMessage(type, text) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${type}`;
+                
+                const contentDiv = document.createElement('div');
+                contentDiv.textContent = text;
                 
                 const timestamp = document.createElement('div');
                 timestamp.className = 'timestamp';
                 timestamp.textContent = new Date().toLocaleTimeString();
-                currentStreamingMessage.appendChild(timestamp);
                 
-                currentStreamingMessage = null;
+                messageDiv.appendChild(contentDiv);
+                messageDiv.appendChild(timestamp);
+                conversation.appendChild(messageDiv);
+                conversation.scrollTop = conversation.scrollHeight;
+                
                 messageCount++;
                 messageCountEl.textContent = messageCount;
             }
-            isProcessing = false;
-            interruptBtn.classList.remove('show');
-            micButton.classList.remove('processing');
-            micButton.textContent = '🎤';
-            statusMessage.textContent = 'Ready! Press and hold to talk';
-        }
 
-        function addMessage(type, text) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${type}`;
-            
-            const contentDiv = document.createElement('div');
-            contentDiv.textContent = text;
-            
-            const timestamp = document.createElement('div');
-            timestamp.className = 'timestamp';
-            timestamp.textContent = new Date().toLocaleTimeString();
-            
-            messageDiv.appendChild(contentDiv);
-            messageDiv.appendChild(timestamp);
-            conversation.appendChild(messageDiv);
-            conversation.scrollTop = conversation.scrollHeight;
-            
-            messageCount++;
-            messageCountEl.textContent = messageCount;
-        }
+            function addConfirmationMessage(text, tools) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message assistant confirmation';
+                
+                const contentDiv = document.createElement('div');
+                contentDiv.innerHTML = `
+                    <strong>⚠️ Confirmation Required</strong><br>
+                    ${text}
+                `;
+                
+                const buttonsDiv = document.createElement('div');
+                buttonsDiv.className = 'confirmation-buttons';
+                
+                const yesBtn = document.createElement('button');
+                yesBtn.className = 'confirm-btn yes';
+                yesBtn.textContent = '✓ Yes, Proceed';
+                yesBtn.onclick = () => {
+                    // Remove buttons after click
+                    buttonsDiv.remove();
+                    statusMessage.textContent = 'Say "yes" or click microphone to confirm';
+                };
+                
+                const noBtn = document.createElement('button');
+                noBtn.className = 'confirm-btn no';
+                noBtn.textContent = '✗ No, Cancel';
+                noBtn.onclick = () => {
+                    // Remove buttons and send cancel
+                    buttonsDiv.remove();
+                    socket.emit('audio_data', { 
+                        audio: btoa('no')  // Send cancel signal
+                    });
+                    statusMessage.textContent = 'Cancelled';
+                };
+                
+                buttonsDiv.appendChild(yesBtn);
+                buttonsDiv.appendChild(noBtn);
+                
+                const timestamp = document.createElement('div');
+                timestamp.className = 'timestamp';
+                timestamp.textContent = new Date().toLocaleTimeString();
+                
+                messageDiv.appendChild(contentDiv);
+                messageDiv.appendChild(buttonsDiv);
+                messageDiv.appendChild(timestamp);
+                conversation.appendChild(messageDiv);
+                conversation.scrollTop = conversation.scrollHeight;
+                
+                messageCount++;
+                messageCountEl.textContent = messageCount;
+            }
 
-        function addConfirmationMessage(text, tools) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message assistant confirmation';
+            let currentUtterance = null;
+        
+        function speakText(text) {
+            // Cancel any ongoing speech
+            if (currentUtterance) {
+                window.speechSynthesis.cancel();
+            }
             
-            const contentDiv = document.createElement('div');
-            contentDiv.innerHTML = `
-                <strong>⚠️ Confirmation Required</strong><br>
-                ${text}
-            `;
+            if (!text || text.trim().length === 0) {
+                return;
+            }
             
-            const buttonsDiv = document.createElement('div');
-            buttonsDiv.className = 'confirmation-buttons';
-            
-            const yesBtn = document.createElement('button');
-            yesBtn.className = 'confirm-btn yes';
-            yesBtn.textContent = '✓ Yes, Proceed';
-            yesBtn.onclick = () => {
-                // Remove buttons after click
-                buttonsDiv.remove();
-                statusMessage.textContent = 'Say "yes" or click microphone to confirm';
-            };
-            
-            const noBtn = document.createElement('button');
-            noBtn.className = 'confirm-btn no';
-            noBtn.textContent = '✗ No, Cancel';
-            noBtn.onclick = () => {
-                // Remove buttons and send cancel
-                buttonsDiv.remove();
-                socket.emit('audio_data', { 
-                    audio: btoa('no')  // Send cancel signal
-                });
-                statusMessage.textContent = 'Cancelled';
-            };
-            
-            buttonsDiv.appendChild(yesBtn);
-            buttonsDiv.appendChild(noBtn);
-            
-            const timestamp = document.createElement('div');
-            timestamp.className = 'timestamp';
-            timestamp.textContent = new Date().toLocaleTimeString();
-            
-            messageDiv.appendChild(contentDiv);
-            messageDiv.appendChild(buttonsDiv);
-            messageDiv.appendChild(timestamp);
-            conversation.appendChild(messageDiv);
-            conversation.scrollTop = conversation.scrollHeight;
-            
-            messageCount++;
-            messageCountEl.textContent = messageCount;
-        }
-
-        function interruptResponse() {
-            if (isProcessing && socket && socket.connected) {
-                socket.emit('interrupt');
-                statusMessage.textContent = 'Interrupting...';
+            try {
+                statusMessage.textContent = '🔊 Speaking...';
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                currentUtterance = utterance;
+                
+                // Configure voice settings
+                utterance.rate = 1.1;  // Slightly faster
+                utterance.pitch = 1.0;
+                utterance.volume = 1.0;
+                
+                // Try to use a better voice if available
+                const voices = window.speechSynthesis.getVoices();
+                const englishVoice = voices.find(v => v.lang.startsWith('en-') && v.localService);
+                if (englishVoice) {
+                    utterance.voice = englishVoice;
+                }
+                
+                utterance.onstart = () => {
+                    console.log('[TTS] Started speaking');
+                    statusMessage.textContent = '🔊 Speaking...';
+                };
+                
+                utterance.onend = () => {
+                    console.log('[TTS] Finished speaking');
+                    statusMessage.textContent = 'Ready! Click to talk';
+                    currentUtterance = null;
+                };
+                
+                utterance.onerror = (e) => {
+                    console.error('[TTS] Speech error:', e);
+                    statusMessage.textContent = 'Speech error';
+                    currentUtterance = null;
+                };
+                
+                window.speechSynthesis.speak(utterance);
+                
+            } catch (error) {
+                console.error('[TTS] Error with speech synthesis:', error);
+                statusMessage.textContent = 'TTS not available';
             }
         }
-
-        function clearConversation() {
-            conversation.innerHTML = '';
-            messageCount = 0;
-            messageCountEl.textContent = '0';
-            currentStreamingMessage = null;
+        
+        // Load voices (they load asynchronously)
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.onvoiceschanged = () => {
+                const voices = window.speechSynthesis.getVoices();
+                console.log(`[TTS] Loaded ${voices.length} voices`);
+            };
         }
+
+            function interruptResponse() {
+                // Stop any ongoing speech
+                if (window.speechSynthesis.speaking) {
+                    window.speechSynthesis.cancel();
+                }
+                
+                if (isProcessing && socket && socket.connected) {
+                    socket.emit('interrupt');
+                    statusMessage.textContent = 'Interrupted';
+                    isProcessing = false;
+                    micButton.classList.remove('processing');
+                    micButton.textContent = '🎤';
+                    interruptBtn.classList.remove('show');
+                }
+            }
+
+            function clearConversation() {
+                conversation.innerHTML = '';
+                messageCount = 0;
+                messageCountEl.textContent = '0';
+                currentStreamingMessage = null;
+            }
 
         async function testConnection() {
             statusMessage.textContent = 'Testing connection...';
